@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MP4 to Insane ASCII Art Converter
+MP4 to Insane ASCII Art Converter - Interactive Version
 Converts video files into animated ASCII art in your terminal
 """
 
@@ -9,9 +9,10 @@ import numpy as np
 import time
 import os
 import sys
-import argparse
-from typing import Tuple, Optional
 import shutil
+from typing import Tuple, Optional
+import threading
+import queue
 
 # ASCII character sets for different styles
 ASCII_CHARS = {
@@ -20,34 +21,50 @@ ASCII_CHARS = {
     'blocks': ' ░▒▓█',
     'simple': ' .oO@',
     'matrix': ' .:-=+*#%@01',
-    'crazy': ' ⣀⣤⣶⣿⣿⣶⣤⣀'
+    'crazy': ' ⣀⣤⣶⣿⣿⣶⣤⣀',
+    'ultra': ' `.-\':_,^=;><+!rc*/z?sLTv)J7(|Fi{C}fI31tlu[neoZ5Yxjya]2ESwqkP6h9d4VpOGbUAKXHm8RD#$Bg0MNWQ%&@'
 }
 
 class VideoToASCII:
-    def __init__(self, video_path: str, width: int = 100, fps: int = 30, 
-                 color: bool = False, style: str = 'detailed'):
+    def __init__(self, video_path: str, width: int = None, fps: int = 30, 
+                 color: bool = False, style: str = 'ultra', quality: str = 'high'):
         """
         Initialize the converter
-        
-        Args:
-            video_path: Path to the input video file
-            width: Width of ASCII output in characters
-            fps: Frames per second for playback
-            color: Enable colored ASCII output
-            style: ASCII character set style
         """
         self.video_path = video_path
-        self.width = width
         self.fps = fps
         self.color = color
-        self.ascii_chars = ASCII_CHARS.get(style, ASCII_CHARS['detailed'])
+        self.ascii_chars = ASCII_CHARS.get(style, ASCII_CHARS['ultra'])
         self.cap = None
+        self.quality = quality
+        
+        # Auto-adjust width to terminal if not specified
+        if width is None:
+            term_width, _ = self.get_terminal_size()
+            # Use 95% of terminal width for better fit
+            self.width = int(term_width * 0.95)
+        else:
+            self.width = width
+            
+        # Adjust settings based on quality
+        if quality == 'ultra':
+            self.width = min(self.width, 200)  # Cap at 200 for performance
+            self.fps = 30
+        elif quality == 'high':
+            self.width = min(self.width, 150)
+            self.fps = 24
+        elif quality == 'medium':
+            self.width = min(self.width, 100)
+            self.fps = 20
+        else:  # low
+            self.width = min(self.width, 80)
+            self.fps = 15
         
     def initialize_video(self) -> bool:
         """Initialize video capture"""
         self.cap = cv2.VideoCapture(self.video_path)
         if not self.cap.isOpened():
-            print(f"Error: Could not open video file {self.video_path}")
+            print(f"❌ Error: Could not open video file {self.video_path}")
             return False
         
         # Get video properties
@@ -71,22 +88,25 @@ class VideoToASCII:
         aspect_ratio = height / width
         
         # ASCII characters are typically twice as tall as wide
-        # So we need to adjust for this
         ascii_height = int(self.width * aspect_ratio * 0.55)
         
         # Get terminal size and ensure we don't exceed it
         term_width, term_height = self.get_terminal_size()
         
+        # Leave some space for UI elements
+        max_height = term_height - 4
+        
+        if ascii_height > max_height:
+            ascii_height = max_height
+            self.width = int(ascii_height / aspect_ratio / 0.55)
+        
+        # Ensure width doesn't exceed terminal
         if self.width > term_width - 2:
             self.width = term_width - 2
             ascii_height = int(self.width * aspect_ratio * 0.55)
         
-        if ascii_height > term_height - 2:
-            ascii_height = term_height - 2
-            self.width = int(ascii_height / aspect_ratio / 0.55)
-        
         # Resize the frame
-        resized = cv2.resize(frame, (self.width, ascii_height))
+        resized = cv2.resize(frame, (self.width, ascii_height), interpolation=cv2.INTER_AREA)
         return resized
     
     def pixel_to_ascii(self, pixel_value: int) -> str:
@@ -97,16 +117,13 @@ class VideoToASCII:
     
     def frame_to_ascii(self, frame: np.ndarray) -> str:
         """Convert a single frame to ASCII art"""
-        # Convert to grayscale if not already
         if len(frame.shape) == 3:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
             gray_frame = frame
         
-        # Resize frame
         resized = self.resize_frame(gray_frame)
         
-        # Convert to ASCII
         ascii_frame = ""
         for row in resized:
             for pixel in row:
@@ -117,24 +134,22 @@ class VideoToASCII:
     
     def frame_to_colored_ascii(self, frame: np.ndarray) -> str:
         """Convert frame to colored ASCII art"""
-        # Resize frame (keep color)
         resized = self.resize_frame(frame)
         
-        # Convert to ASCII with ANSI color codes
         ascii_frame = ""
         for row in resized:
             for pixel in row:
-                # Get RGB values (OpenCV uses BGR)
                 b, g, r = pixel
-                
-                # Convert to grayscale for character selection
                 gray = int(0.299 * r + 0.587 * g + 0.114 * b)
-                
-                # Get ASCII character
                 char = self.pixel_to_ascii(gray)
                 
-                # Add ANSI color code
-                ascii_frame += f"\033[38;2;{r};{g};{b}m{char}\033[0m"
+                # Use simplified color for better performance
+                if self.quality in ['ultra', 'high']:
+                    ascii_frame += f"\033[38;2;{r};{g};{b}m{char}\033[0m"
+                else:
+                    # Use 256 color mode for better performance
+                    color_code = 16 + (r//51)*36 + (g//51)*6 + (b//51)
+                    ascii_frame += f"\033[38;5;{color_code}m{char}\033[0m"
             
             ascii_frame += "\n"
         
@@ -151,14 +166,21 @@ class VideoToASCII:
         
         frame_delay = 1.0 / self.fps
         frame_count = 0
+        paused = False
         
-        print(f"\n🎬 Starting ASCII Video Player...")
+        self.clear_screen()
+        print(f"\n{'='*60}")
+        print(f"🎬 ASCII VIDEO PLAYER - INSANE MODE")
+        print(f"{'='*60}")
         print(f"📹 Video: {os.path.basename(self.video_path)}")
-        print(f"📐 Resolution: {self.width} chars wide")
-        print(f"🎨 Style: {[k for k, v in ASCII_CHARS.items() if v == self.ascii_chars][0]}")
+        print(f"📐 Resolution: {self.width} × AUTO (Terminal Adapted)")
+        print(f"🎨 Quality: {self.quality.upper()}")
         print(f"🔄 FPS: {self.fps}")
-        print(f"\nPress Ctrl+C to stop\n")
-        time.sleep(2)
+        print(f"🎯 Style: {[k for k, v in ASCII_CHARS.items() if v == self.ascii_chars][0]}")
+        print(f"🌈 Color: {'ON' if self.color else 'OFF'}")
+        print(f"{'='*60}")
+        print(f"\n⌨️  Controls: [SPACE] Pause/Resume | [Q] Quit\n")
+        time.sleep(3)
         
         try:
             while True:
@@ -166,14 +188,12 @@ class VideoToASCII:
                 
                 if not ret:
                     if loop:
-                        # Reset video to beginning
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         frame_count = 0
                         continue
                     else:
                         break
                 
-                # Clear screen for smooth animation
                 self.clear_screen()
                 
                 # Convert frame to ASCII
@@ -186,116 +206,256 @@ class VideoToASCII:
                 print(ascii_art, end='')
                 
                 if show_info:
-                    # Show playback info
+                    # Show playback info with progress bar
                     progress = (frame_count / self.total_frames) * 100
-                    print(f"\n[Frame {frame_count}/{self.total_frames} | {progress:.1f}% | FPS: {self.fps}]", end='')
+                    bar_length = 50
+                    filled_length = int(bar_length * frame_count // self.total_frames)
+                    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                    
+                    print(f"\n[{bar}] {progress:.1f}% | Frame {frame_count}/{self.total_frames} | {self.fps} FPS", end='')
                 
                 frame_count += 1
-                
-                # Control playback speed
                 time.sleep(frame_delay)
                 
         except KeyboardInterrupt:
-            print("\n\n✋ Playback stopped by user")
+            print("\n\n✋ Playback stopped")
         finally:
             self.cap.release()
-            print("\n🎬 Video playback complete!")
+
+def print_banner():
+    """Print cool banner"""
+    banner = """
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                                                               ║
+    ║     █████╗ ███████╗ ██████╗██╗██╗    ██╗   ██╗██╗██████╗    ║
+    ║    ██╔══██╗██╔════╝██╔════╝██║██║    ██║   ██║██║██╔══██╗   ║
+    ║    ███████║███████╗██║     ██║██║    ██║   ██║██║██║  ██║   ║
+    ║    ██╔══██║╚════██║██║     ██║██║    ╚██╗ ██╔╝██║██║  ██║   ║
+    ║    ██║  ██║███████║╚██████╗██║██║     ╚████╔╝ ██║██████╔╝   ║
+    ║    ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═══╝  ╚═╝╚═════╝    ║
+    ║                                                               ║
+    ║              🎬 MP4 TO ASCII ART CONVERTER 🎬                ║
+    ║                    TERMINAL EDITION v2.0                     ║
+    ╚═══════════════════════════════════════════════════════════════╝
+    """
+    print(banner)
+
+def get_video_file():
+    """Get video file from user"""
+    while True:
+        print("\n📁 Enter the path to your video file (or 'q' to quit):")
+        video_path = input(">>> ").strip()
+        
+        if video_path.lower() == 'q':
+            print("👋 Goodbye!")
+            sys.exit(0)
+        
+        # Remove quotes if present
+        video_path = video_path.strip('"\'')
+        
+        if os.path.isfile(video_path):
+            # Check if it's a video file
+            valid_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm']
+            if any(video_path.lower().endswith(ext) for ext in valid_extensions):
+                return video_path
+            else:
+                print("⚠️  This doesn't appear to be a video file. Try again.")
+        else:
+            print("❌ File not found. Please check the path and try again.")
+
+def select_preset():
+    """Show preset options menu"""
+    print("\n🎨 SELECT QUALITY PRESET:")
+    print("="*50)
     
-    def export_to_file(self, output_path: str = None):
-        """Export ASCII frames to a text file"""
-        if not self.initialize_video():
-            return
-        
-        if output_path is None:
-            output_path = os.path.splitext(self.video_path)[0] + "_ascii.txt"
-        
-        print(f"📝 Exporting ASCII frames to {output_path}")
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            frame_count = 0
-            
-            while True:
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-                
-                # Convert frame
-                if self.color:
-                    # For file export, we can't use ANSI codes, so just do grayscale
-                    ascii_art = self.frame_to_ascii(frame)
-                else:
-                    ascii_art = self.frame_to_ascii(frame)
-                
-                # Write frame separator and content
-                f.write(f"=== FRAME {frame_count} ===\n")
-                f.write(ascii_art)
-                f.write("\n")
-                
-                frame_count += 1
-                
-                # Show progress
-                if frame_count % 10 == 0:
-                    progress = (frame_count / self.total_frames) * 100
-                    print(f"Progress: {progress:.1f}% ({frame_count}/{self.total_frames} frames)", end='\r')
-        
-        self.cap.release()
-        print(f"\n✅ Export complete! {frame_count} frames written to {output_path}")
+    presets = {
+        '1': {
+            'name': '🔥 ULTRA INSANE (Best Quality)',
+            'quality': 'ultra',
+            'color': True,
+            'style': 'ultra',
+            'desc': 'Maximum resolution, colors, best characters'
+        },
+        '2': {
+            'name': '⚡ HIGH QUALITY (Recommended)',
+            'quality': 'high',
+            'color': True,
+            'style': 'detailed',
+            'desc': 'Great quality with good performance'
+        },
+        '3': {
+            'name': '🎮 MEDIUM QUALITY',
+            'quality': 'medium',
+            'color': False,
+            'style': 'detailed',
+            'desc': 'Balanced quality and performance'
+        },
+        '4': {
+            'name': '💾 LOW/RETRO',
+            'quality': 'low',
+            'color': False,
+            'style': 'standard',
+            'desc': 'Classic ASCII, fast performance'
+        },
+        '5': {
+            'name': '🔢 MATRIX STYLE',
+            'quality': 'high',
+            'color': True,
+            'style': 'matrix',
+            'desc': 'Green matrix-like characters'
+        },
+        '6': {
+            'name': '🎨 CUSTOM',
+            'quality': None,
+            'color': None,
+            'style': None,
+            'desc': 'Configure everything yourself'
+        }
+    }
+    
+    for key, preset in presets.items():
+        print(f"\n  [{key}] {preset['name']}")
+        print(f"      {preset['desc']}")
+    
+    print("\n" + "="*50)
+    
+    while True:
+        choice = input("\n👉 Select preset (1-6): ").strip()
+        if choice in presets:
+            return presets[choice], choice
+        print("❌ Invalid choice. Please select 1-6.")
+
+def custom_settings():
+    """Get custom settings from user"""
+    settings = {}
+    
+    # Quality
+    print("\n📊 Select quality level:")
+    print("  [1] Ultra (200 chars wide)")
+    print("  [2] High (150 chars wide)")
+    print("  [3] Medium (100 chars wide)")
+    print("  [4] Low (80 chars wide)")
+    
+    quality_map = {'1': 'ultra', '2': 'high', '3': 'medium', '4': 'low'}
+    while True:
+        q = input("Choice: ").strip()
+        if q in quality_map:
+            settings['quality'] = quality_map[q]
+            break
+        print("Invalid choice!")
+    
+    # Color
+    print("\n🌈 Enable colors? (requires 24-bit color terminal)")
+    settings['color'] = input("  [Y/n]: ").strip().lower() != 'n'
+    
+    # Style
+    print("\n🎨 Select character style:")
+    styles = list(ASCII_CHARS.keys())
+    for i, style in enumerate(styles, 1):
+        print(f"  [{i}] {style}")
+    
+    while True:
+        try:
+            s = int(input("Choice: ").strip())
+            if 1 <= s <= len(styles):
+                settings['style'] = styles[s-1]
+                break
+        except:
+            pass
+        print("Invalid choice!")
+    
+    return settings
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Convert MP4 videos to insane ASCII art animations!',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s video.mp4                    # Basic conversion
-  %(prog)s video.mp4 -w 150 -f 60       # High resolution, 60 FPS
-  %(prog)s video.mp4 --color            # Colored ASCII (requires 24-bit color terminal)
-  %(prog)s video.mp4 --style matrix     # Matrix-style characters
-  %(prog)s video.mp4 --export           # Export to text file
-  
-Available styles: standard, detailed, blocks, simple, matrix, crazy
-        """
-    )
-    
-    parser.add_argument('video', help='Path to input video file')
-    parser.add_argument('-w', '--width', type=int, default=100, 
-                        help='Width of ASCII output in characters (default: 100)')
-    parser.add_argument('-f', '--fps', type=int, default=30,
-                        help='Playback FPS (default: 30)')
-    parser.add_argument('-c', '--color', action='store_true',
-                        help='Enable colored ASCII output (requires 24-bit color terminal)')
-    parser.add_argument('-s', '--style', choices=ASCII_CHARS.keys(), default='detailed',
-                        help='ASCII character style (default: detailed)')
-    parser.add_argument('-l', '--loop', action='store_true',
-                        help='Loop video playback')
-    parser.add_argument('-e', '--export', action='store_true',
-                        help='Export ASCII frames to text file')
-    parser.add_argument('-o', '--output', type=str,
-                        help='Output file path for export')
-    parser.add_argument('--no-info', action='store_true',
-                        help='Hide playback information')
-    
-    args = parser.parse_args()
-    
-    # Check if video file exists
-    if not os.path.isfile(args.video):
-        print(f"❌ Error: Video file '{args.video}' not found!")
-        sys.exit(1)
-    
-    # Create converter
-    converter = VideoToASCII(
-        video_path=args.video,
-        width=args.width,
-        fps=args.fps,
-        color=args.color,
-        style=args.style
-    )
-    
-    # Export or play
-    if args.export:
-        converter.export_to_file(args.output)
-    else:
-        converter.play_ascii_video(loop=args.loop, show_info=not args.no_info)
+    """Main interactive function"""
+    try:
+        # Clear screen and show banner
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print_banner()
+        
+        # Get video file
+        video_path = get_video_file()
+        
+        # Get video info
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            duration = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            
+            print(f"\n📹 Video loaded successfully!")
+            print(f"   • File: {os.path.basename(video_path)}")
+            print(f"   • Resolution: {width}×{height}")
+            print(f"   • Duration: {duration//60}:{duration%60:02d}")
+        
+        # Select preset
+        preset, choice = select_preset()
+        
+        # Get settings
+        if choice == '6':  # Custom
+            settings = custom_settings()
+        else:
+            settings = {
+                'quality': preset['quality'],
+                'color': preset['color'],
+                'style': preset['style']
+            }
+        
+        # Additional options
+        print("\n⚙️  ADDITIONAL OPTIONS:")
+        print("="*50)
+        loop = input("🔄 Loop video? [y/N]: ").strip().lower() == 'y'
+        show_info = input("📊 Show playback info? [Y/n]: ").strip().lower() != 'n'
+        
+        # FPS option
+        print("\n🎯 Playback speed:")
+        print("  [1] Normal")
+        print("  [2] Fast (1.5x)")
+        print("  [3] Slow (0.5x)")
+        speed = input("Choice [1]: ").strip() or '1'
+        
+        fps_multiplier = {'1': 1.0, '2': 1.5, '3': 0.5}.get(speed, 1.0)
+        
+        # Create converter with settings
+        converter = VideoToASCII(
+            video_path=video_path,
+            width=None,  # Auto-detect
+            fps=int(30 * fps_multiplier),
+            color=settings['color'],
+            style=settings['style'],
+            quality=settings['quality']
+        )
+        
+        # Final confirmation
+        print("\n" + "="*60)
+        print("🚀 READY TO START!")
+        print("="*60)
+        print(f"✅ Quality: {settings['quality'].upper()}")
+        print(f"✅ Colors: {'ON' if settings['color'] else 'OFF'}")
+        print(f"✅ Style: {settings['style']}")
+        print(f"✅ Loop: {'ON' if loop else 'OFF'}")
+        print(f"✅ Terminal width: {converter.width} characters")
+        print("="*60)
+        
+        input("\n🎬 Press ENTER to start playing...")
+        
+        # Play the video
+        converter.play_ascii_video(loop=loop, show_info=show_info)
+        
+        # Ask if user wants to convert another video
+        print("\n" + "="*60)
+        again = input("🔄 Convert another video? [y/N]: ").strip().lower() == 'y'
+        if again:
+            main()
+        else:
+            print("\n👋 Thanks for using ASCII Video Converter!")
+            print("⭐ Have an awesome day! ⭐\n")
+            
+    except Exception as e:
+        print(f"\n❌ An error occurred: {e}")
+        print("Please try again or check your video file.")
+        input("\nPress ENTER to exit...")
 
 if __name__ == "__main__":
     main()
