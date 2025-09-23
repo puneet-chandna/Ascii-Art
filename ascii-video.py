@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MP4 to Insane ASCII Art Converter - OPTIMIZED VERSION
+MP4 to Insane ASCII Art Converter - FIXED VERSION
 With proper frame timing and performance optimization
 """
 
@@ -169,22 +169,6 @@ class VideoToASCII:
         # Use ANSI escape codes for faster clearing
         print("\033[2J\033[H", end='')
     
-    def preprocess_frames_thread(self):
-        """Thread to preprocess frames ahead of time"""
-        while self.preprocessing:
-            if len(self.frame_buffer) < 5:  # Keep buffer filled
-                ret, frame = self.cap.read()
-                if ret:
-                    if self.color:
-                        ascii_frame = self.frame_to_colored_ascii_fast(frame)
-                    else:
-                        ascii_frame = self.frame_to_ascii_fast(frame)
-                    self.frame_buffer.append(ascii_frame)
-                else:
-                    break
-            else:
-                time.sleep(0.001)  # Small sleep to prevent CPU spinning
-    
     def play_ascii_video(self, loop: bool = False, show_info: bool = True):
         """Play the video with proper frame timing"""
         if not self.initialize_video():
@@ -210,32 +194,35 @@ class VideoToASCII:
         
         frame_count = 0
         start_time = time.perf_counter()
-        last_frame_time = start_time
         dropped_frames = 0
+        video_ended = False
         
         try:
-            while True:
+            while not video_ended:
                 current_time = time.perf_counter()
                 elapsed = current_time - start_time
                 
-                # Calculate which frame we should be showing
-                target_frame = int(elapsed * self.video_fps)
+                # Calculate which frame we should be showing based on elapsed time
+                target_frame_num = min(int(elapsed * self.video_fps), self.total_frames - 1)
                 
-                # Skip frames if we're behind
-                while frame_count < target_frame and frame_count < self.total_frames:
+                # Read and process frames until we reach the target frame
+                while frame_count <= target_frame_num:
                     ret, frame = self.cap.read()
+                    
                     if not ret:
                         if loop:
+                            # Reset video to beginning
                             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                             frame_count = 0
                             start_time = time.perf_counter()
                             dropped_frames = 0
-                            continue
+                            break
                         else:
+                            video_ended = True
                             break
                     
-                    # Only process and display if we're at the target frame
-                    if frame_count == target_frame - 1:
+                    # Process and display the frame if it's the target
+                    if frame_count == target_frame_num:
                         # Time the processing
                         process_start = time.perf_counter()
                         
@@ -250,7 +237,7 @@ class VideoToASCII:
                         print(ascii_art, end='')
                         
                         if show_info:
-                            # Calculate actual FPS
+                            # Calculate actual FPS and progress
                             actual_fps = frame_count / elapsed if elapsed > 0 else 0
                             progress = (frame_count / self.total_frames) * 100
                             
@@ -259,57 +246,56 @@ class VideoToASCII:
                             filled_length = int(bar_length * frame_count // self.total_frames)
                             bar = '█' * filled_length + '░' * (bar_length - filled_length)
                             
-                            # Calculate time remaining
-                            if actual_fps > 0:
-                                time_remaining = (self.total_frames - frame_count) / self.video_fps
-                            else:
-                                time_remaining = 0
-                            
                             info = f"[{bar}] {progress:.1f}% | "
                             info += f"Frame {frame_count}/{self.total_frames} | "
                             info += f"FPS: {actual_fps:.1f}/{self.video_fps:.1f} | "
-                            info += f"Time: {elapsed:.1f}s/{self.total_frames/self.video_fps:.1f}s | "
-                            info += f"Dropped: {dropped_frames}"
+                            info += f"Time: {elapsed:.1f}s/{self.total_frames/self.video_fps:.1f}s"
+                            if dropped_frames > 0:
+                                info += f" | Dropped: {dropped_frames}"
                             
-                            print(info, end='')
+                            print(info, end='', flush=True)
                         
                         process_time = time.perf_counter() - process_start
                         self.processing_times.append(process_time)
                     else:
+                        # Frame was skipped
                         dropped_frames += 1
                     
                     frame_count += 1
+                    
+                    # Break if video ended
+                    if video_ended:
+                        break
                 
-                if not ret and not loop:
-                    break
-                
-                # Calculate sleep time to maintain sync
-                target_time = frame_count / self.video_fps
-                current_elapsed = time.perf_counter() - start_time
-                sleep_time = target_time - current_elapsed
-                
-                # Only sleep if we're ahead of schedule
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                # Calculate how long to sleep to maintain proper timing
+                if not video_ended:
+                    next_frame_time = (frame_count / self.video_fps)
+                    sleep_duration = next_frame_time - (time.perf_counter() - start_time)
+                    
+                    if sleep_duration > 0:
+                        time.sleep(sleep_duration)
                 
         except KeyboardInterrupt:
-            print("\n\n✋ Playback stopped")
+            print("\n\n✋ Playback stopped by user")
+        except Exception as e:
+            print(f"\n\n❌ Error during playback: {e}")
         finally:
             self.cap.release()
             
             # Final stats
             total_time = time.perf_counter() - start_time
-            print(f"\n\n{'='*60}")
-            print(f"📊 PLAYBACK STATISTICS:")
-            print(f"  • Total playback time: {total_time:.2f}s")
-            print(f"  • Original video duration: {self.total_frames/self.video_fps:.2f}s")
-            print(f"  • Time difference: {total_time - (self.total_frames/self.video_fps):.2f}s")
-            print(f"  • Frames played: {frame_count}")
-            print(f"  • Frames dropped: {dropped_frames}")
-            if self.processing_times:
-                avg_process = sum(self.processing_times) / len(self.processing_times)
-                print(f"  • Avg processing time: {avg_process*1000:.2f}ms")
-            print(f"{'='*60}")
+            if total_time > 0:
+                print(f"\n\n{'='*60}")
+                print(f"📊 PLAYBACK STATISTICS:")
+                print(f"  • Total playback time: {total_time:.2f}s")
+                print(f"  • Original video duration: {self.total_frames/self.video_fps:.2f}s")
+                print(f"  • Time difference: {total_time - (self.total_frames/self.video_fps):.2f}s")
+                print(f"  • Frames played: {frame_count}")
+                print(f"  • Frames dropped: {dropped_frames}")
+                if self.processing_times:
+                    avg_process = sum(self.processing_times) / len(self.processing_times)
+                    print(f"  • Avg processing time: {avg_process*1000:.2f}ms")
+                print(f"{'='*60}")
 
 def print_banner():
     """Print cool banner"""
@@ -323,8 +309,8 @@ def print_banner():
     ║    ██║  ██║███████║╚██████╗██║██║     ╚████╔╝ ██║██████╔╝   ║
     ║    ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═══╝  ╚═╝╚═════╝    ║
     ║                                                               ║
-    ║           🎬 MP4 TO ASCII ART CONVERTER v2.0 🎬              ║
-    ║                  NOW WITH PROPER TIMING!                     ║
+    ║           🎬 MP4 TO ASCII ART CONVERTER v2.1 🎬              ║
+    ║                  NOW WITH PERFECT TIMING!                    ║
     ╚═══════════════════════════════════════════════════════════════╝
     """
     print(banner)
@@ -344,7 +330,7 @@ def get_video_file():
         
         if os.path.isfile(video_path):
             # Check if it's a video file
-            valid_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm']
+            valid_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.mpg', '.mpeg']
             if any(video_path.lower().endswith(ext) for ext in valid_extensions):
                 return video_path
             else:
@@ -470,7 +456,7 @@ def main():
         if cap.isOpened():
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = frame_count / fps
+            duration = frame_count / fps if fps > 0 else 0
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
@@ -481,6 +467,8 @@ def main():
             print(f"   • FPS: {fps:.1f}")
             print(f"   • Duration: {duration:.1f}s ({int(duration//60)}:{int(duration%60):02d})")
             print(f"   • Total frames: {frame_count}")
+        else:
+            print("⚠️  Warning: Could not read video properties")
         
         # Select preset
         preset, choice = select_preset()
@@ -539,6 +527,8 @@ def main():
             
     except Exception as e:
         print(f"\n❌ An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
         print("Please try again or check your video file.")
         input("\nPress ENTER to exit...")
 
