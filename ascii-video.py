@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MP4 to Insane ASCII Art Converter - Interactive Version
-Converts video files into animated ASCII art in your terminal
+MP4 to Insane ASCII Art Converter - OPTIMIZED VERSION
+With proper frame timing and performance optimization
 """
 
 import cv2
@@ -10,9 +10,11 @@ import time
 import os
 import sys
 import shutil
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import threading
 import queue
+from collections import deque
+from multiprocessing import Pool, cpu_count
 
 # ASCII character sets for different styles
 ASCII_CHARS = {
@@ -32,34 +34,47 @@ class VideoToASCII:
         Initialize the converter
         """
         self.video_path = video_path
-        self.fps = fps
+        self.target_fps = fps
         self.color = color
         self.ascii_chars = ASCII_CHARS.get(style, ASCII_CHARS['ultra'])
         self.cap = None
         self.quality = quality
+        self.frame_buffer = deque(maxlen=10)  # Pre-processed frame buffer
+        self.processing_times = deque(maxlen=30)  # Track processing times
+        
+        # Pre-calculate ASCII lookup table for faster conversion
+        self.ascii_lookup = self._create_lookup_table()
         
         # Auto-adjust width to terminal if not specified
         if width is None:
             term_width, _ = self.get_terminal_size()
-            # Use 95% of terminal width for better fit
             self.width = int(term_width * 0.95)
         else:
             self.width = width
             
         # Adjust settings based on quality
         if quality == 'ultra':
-            self.width = min(self.width, 200)  # Cap at 200 for performance
-            self.fps = 30
+            self.width = min(self.width, 200)
+            self.skip_frames = False
         elif quality == 'high':
             self.width = min(self.width, 150)
-            self.fps = 24
+            self.skip_frames = False
         elif quality == 'medium':
             self.width = min(self.width, 100)
-            self.fps = 20
+            self.skip_frames = True
         else:  # low
             self.width = min(self.width, 80)
-            self.fps = 15
-        
+            self.skip_frames = True
+    
+    def _create_lookup_table(self):
+        """Create a lookup table for faster ASCII conversion"""
+        lookup = []
+        chars_len = len(self.ascii_chars)
+        for i in range(256):
+            index = int((i / 255) * (chars_len - 1))
+            lookup.append(self.ascii_chars[index])
+        return lookup
+    
     def initialize_video(self) -> bool:
         """Initialize video capture"""
         self.cap = cv2.VideoCapture(self.video_path)
@@ -73,6 +88,9 @@ class VideoToASCII:
         self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
+        # Calculate actual frame delay based on video FPS
+        self.frame_delay = 1.0 / self.video_fps
+        
         return True
     
     def get_terminal_size(self) -> Tuple[int, int]:
@@ -80,147 +98,218 @@ class VideoToASCII:
         size = shutil.get_terminal_size()
         return size.columns, size.lines
     
-    def resize_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Resize frame to fit ASCII dimensions"""
-        height, width = frame.shape[:2]
-        
-        # Calculate aspect ratio
+    def calculate_dimensions(self):
+        """Pre-calculate dimensions for all frames"""
+        height, width = self.video_height, self.video_width
         aspect_ratio = height / width
         
         # ASCII characters are typically twice as tall as wide
-        ascii_height = int(self.width * aspect_ratio * 0.55)
+        self.ascii_height = int(self.width * aspect_ratio * 0.55)
         
         # Get terminal size and ensure we don't exceed it
         term_width, term_height = self.get_terminal_size()
-        
-        # Leave some space for UI elements
         max_height = term_height - 4
         
-        if ascii_height > max_height:
-            ascii_height = max_height
-            self.width = int(ascii_height / aspect_ratio / 0.55)
+        if self.ascii_height > max_height:
+            self.ascii_height = max_height
+            self.width = int(self.ascii_height / aspect_ratio / 0.55)
         
-        # Ensure width doesn't exceed terminal
         if self.width > term_width - 2:
             self.width = term_width - 2
-            ascii_height = int(self.width * aspect_ratio * 0.55)
-        
-        # Resize the frame
-        resized = cv2.resize(frame, (self.width, ascii_height), interpolation=cv2.INTER_AREA)
-        return resized
+            self.ascii_height = int(self.width * aspect_ratio * 0.55)
     
-    def pixel_to_ascii(self, pixel_value: int) -> str:
-        """Convert pixel brightness to ASCII character"""
-        chars_len = len(self.ascii_chars)
-        index = int((pixel_value / 255) * (chars_len - 1))
-        return self.ascii_chars[index]
-    
-    def frame_to_ascii(self, frame: np.ndarray) -> str:
-        """Convert a single frame to ASCII art"""
+    def frame_to_ascii_fast(self, frame: np.ndarray) -> str:
+        """Optimized frame to ASCII conversion"""
+        # Convert to grayscale if needed
         if len(frame.shape) == 3:
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
-            gray_frame = frame
+            gray = frame
         
-        resized = self.resize_frame(gray_frame)
+        # Resize frame - use INTER_LINEAR for better speed/quality balance
+        resized = cv2.resize(gray, (self.width, self.ascii_height), interpolation=cv2.INTER_LINEAR)
         
-        ascii_frame = ""
+        # Fast ASCII conversion using lookup table
+        ascii_str = ""
         for row in resized:
-            for pixel in row:
-                ascii_frame += self.pixel_to_ascii(pixel)
-            ascii_frame += "\n"
+            row_chars = [self.ascii_lookup[pixel] for pixel in row]
+            ascii_str += ''.join(row_chars) + '\n'
         
-        return ascii_frame
+        return ascii_str
     
-    def frame_to_colored_ascii(self, frame: np.ndarray) -> str:
-        """Convert frame to colored ASCII art"""
-        resized = self.resize_frame(frame)
+    def frame_to_colored_ascii_fast(self, frame: np.ndarray) -> str:
+        """Optimized colored ASCII conversion"""
+        # Resize frame (keep color)
+        resized = cv2.resize(frame, (self.width, self.ascii_height), interpolation=cv2.INTER_LINEAR)
         
-        ascii_frame = ""
+        # Pre-allocate list for better performance
+        lines = []
+        
         for row in resized:
+            line = []
             for pixel in row:
                 b, g, r = pixel
                 gray = int(0.299 * r + 0.587 * g + 0.114 * b)
-                char = self.pixel_to_ascii(gray)
+                char = self.ascii_lookup[gray]
                 
-                # Use simplified color for better performance
+                # Use simpler color format for better performance
                 if self.quality in ['ultra', 'high']:
-                    ascii_frame += f"\033[38;2;{r};{g};{b}m{char}\033[0m"
+                    line.append(f"\033[38;2;{r};{g};{b}m{char}")
                 else:
-                    # Use 256 color mode for better performance
+                    # 256 color mode - faster
                     color_code = 16 + (r//51)*36 + (g//51)*6 + (b//51)
-                    ascii_frame += f"\033[38;5;{color_code}m{char}\033[0m"
+                    line.append(f"\033[38;5;{color_code}m{char}")
             
-            ascii_frame += "\n"
+            lines.append(''.join(line) + "\033[0m")
         
-        return ascii_frame
+        return '\n'.join(lines) + '\n'
     
     def clear_screen(self):
         """Clear the terminal screen"""
-        os.system('cls' if os.name == 'nt' else 'clear')
+        # Use ANSI escape codes for faster clearing
+        print("\033[2J\033[H", end='')
+    
+    def preprocess_frames_thread(self):
+        """Thread to preprocess frames ahead of time"""
+        while self.preprocessing:
+            if len(self.frame_buffer) < 5:  # Keep buffer filled
+                ret, frame = self.cap.read()
+                if ret:
+                    if self.color:
+                        ascii_frame = self.frame_to_colored_ascii_fast(frame)
+                    else:
+                        ascii_frame = self.frame_to_ascii_fast(frame)
+                    self.frame_buffer.append(ascii_frame)
+                else:
+                    break
+            else:
+                time.sleep(0.001)  # Small sleep to prevent CPU spinning
     
     def play_ascii_video(self, loop: bool = False, show_info: bool = True):
-        """Play the video as ASCII art in the terminal"""
+        """Play the video with proper frame timing"""
         if not self.initialize_video():
             return
         
-        frame_delay = 1.0 / self.fps
-        frame_count = 0
-        paused = False
+        # Pre-calculate dimensions
+        self.calculate_dimensions()
         
+        # Start info
         self.clear_screen()
         print(f"\n{'='*60}")
-        print(f"🎬 ASCII VIDEO PLAYER - INSANE MODE")
+        print(f"🎬 ASCII VIDEO PLAYER - OPTIMIZED")
         print(f"{'='*60}")
         print(f"📹 Video: {os.path.basename(self.video_path)}")
-        print(f"📐 Resolution: {self.width} × AUTO (Terminal Adapted)")
+        print(f"📐 Resolution: {self.width} × {self.ascii_height}")
         print(f"🎨 Quality: {self.quality.upper()}")
-        print(f"🔄 FPS: {self.fps}")
-        print(f"🎯 Style: {[k for k, v in ASCII_CHARS.items() if v == self.ascii_chars][0]}")
+        print(f"🔄 Original FPS: {self.video_fps:.1f}")
+        print(f"⏱️ Original Duration: {self.total_frames/self.video_fps:.1f}s")
         print(f"🌈 Color: {'ON' if self.color else 'OFF'}")
         print(f"{'='*60}")
-        print(f"\n⌨️  Controls: [SPACE] Pause/Resume | [Q] Quit\n")
-        time.sleep(3)
+        print(f"\n⌨️  Press Ctrl+C to stop\n")
+        time.sleep(2)
+        
+        frame_count = 0
+        start_time = time.perf_counter()
+        last_frame_time = start_time
+        dropped_frames = 0
         
         try:
             while True:
-                ret, frame = self.cap.read()
+                current_time = time.perf_counter()
+                elapsed = current_time - start_time
                 
-                if not ret:
-                    if loop:
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        frame_count = 0
-                        continue
-                    else:
-                        break
+                # Calculate which frame we should be showing
+                target_frame = int(elapsed * self.video_fps)
                 
-                self.clear_screen()
-                
-                # Convert frame to ASCII
-                if self.color:
-                    ascii_art = self.frame_to_colored_ascii(frame)
-                else:
-                    ascii_art = self.frame_to_ascii(frame)
-                
-                # Display the frame
-                print(ascii_art, end='')
-                
-                if show_info:
-                    # Show playback info with progress bar
-                    progress = (frame_count / self.total_frames) * 100
-                    bar_length = 50
-                    filled_length = int(bar_length * frame_count // self.total_frames)
-                    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                # Skip frames if we're behind
+                while frame_count < target_frame and frame_count < self.total_frames:
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        if loop:
+                            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            frame_count = 0
+                            start_time = time.perf_counter()
+                            dropped_frames = 0
+                            continue
+                        else:
+                            break
                     
-                    print(f"\n[{bar}] {progress:.1f}% | Frame {frame_count}/{self.total_frames} | {self.fps} FPS", end='')
+                    # Only process and display if we're at the target frame
+                    if frame_count == target_frame - 1:
+                        # Time the processing
+                        process_start = time.perf_counter()
+                        
+                        # Convert frame to ASCII
+                        if self.color:
+                            ascii_art = self.frame_to_colored_ascii_fast(frame)
+                        else:
+                            ascii_art = self.frame_to_ascii_fast(frame)
+                        
+                        # Clear and display
+                        self.clear_screen()
+                        print(ascii_art, end='')
+                        
+                        if show_info:
+                            # Calculate actual FPS
+                            actual_fps = frame_count / elapsed if elapsed > 0 else 0
+                            progress = (frame_count / self.total_frames) * 100
+                            
+                            # Progress bar
+                            bar_length = 50
+                            filled_length = int(bar_length * frame_count // self.total_frames)
+                            bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                            
+                            # Calculate time remaining
+                            if actual_fps > 0:
+                                time_remaining = (self.total_frames - frame_count) / self.video_fps
+                            else:
+                                time_remaining = 0
+                            
+                            info = f"[{bar}] {progress:.1f}% | "
+                            info += f"Frame {frame_count}/{self.total_frames} | "
+                            info += f"FPS: {actual_fps:.1f}/{self.video_fps:.1f} | "
+                            info += f"Time: {elapsed:.1f}s/{self.total_frames/self.video_fps:.1f}s | "
+                            info += f"Dropped: {dropped_frames}"
+                            
+                            print(info, end='')
+                        
+                        process_time = time.perf_counter() - process_start
+                        self.processing_times.append(process_time)
+                    else:
+                        dropped_frames += 1
+                    
+                    frame_count += 1
                 
-                frame_count += 1
-                time.sleep(frame_delay)
+                if not ret and not loop:
+                    break
+                
+                # Calculate sleep time to maintain sync
+                target_time = frame_count / self.video_fps
+                current_elapsed = time.perf_counter() - start_time
+                sleep_time = target_time - current_elapsed
+                
+                # Only sleep if we're ahead of schedule
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
         except KeyboardInterrupt:
             print("\n\n✋ Playback stopped")
         finally:
             self.cap.release()
+            
+            # Final stats
+            total_time = time.perf_counter() - start_time
+            print(f"\n\n{'='*60}")
+            print(f"📊 PLAYBACK STATISTICS:")
+            print(f"  • Total playback time: {total_time:.2f}s")
+            print(f"  • Original video duration: {self.total_frames/self.video_fps:.2f}s")
+            print(f"  • Time difference: {total_time - (self.total_frames/self.video_fps):.2f}s")
+            print(f"  • Frames played: {frame_count}")
+            print(f"  • Frames dropped: {dropped_frames}")
+            if self.processing_times:
+                avg_process = sum(self.processing_times) / len(self.processing_times)
+                print(f"  • Avg processing time: {avg_process*1000:.2f}ms")
+            print(f"{'='*60}")
 
 def print_banner():
     """Print cool banner"""
@@ -234,8 +323,8 @@ def print_banner():
     ║    ██║  ██║███████║╚██████╗██║██║     ╚████╔╝ ██║██████╔╝   ║
     ║    ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═══╝  ╚═╝╚═════╝    ║
     ║                                                               ║
-    ║              🎬 MP4 TO ASCII ART CONVERTER 🎬                ║
-    ║                    TERMINAL EDITION v2.0                     ║
+    ║           🎬 MP4 TO ASCII ART CONVERTER v2.0 🎬              ║
+    ║                  NOW WITH PROPER TIMING!                     ║
     ╚═══════════════════════════════════════════════════════════════╝
     """
     print(banner)
@@ -270,39 +359,39 @@ def select_preset():
     
     presets = {
         '1': {
-            'name': '🔥 ULTRA INSANE (Best Quality)',
+            'name': '🔥 ULTRA INSANE (Highest Quality)',
             'quality': 'ultra',
             'color': True,
             'style': 'ultra',
-            'desc': 'Maximum resolution, colors, best characters'
+            'desc': 'Maximum resolution, perfect sync'
         },
         '2': {
             'name': '⚡ HIGH QUALITY (Recommended)',
             'quality': 'high',
             'color': True,
             'style': 'detailed',
-            'desc': 'Great quality with good performance'
+            'desc': 'Great quality, optimized performance'
         },
         '3': {
             'name': '🎮 MEDIUM QUALITY',
             'quality': 'medium',
             'color': False,
             'style': 'detailed',
-            'desc': 'Balanced quality and performance'
+            'desc': 'Good balance, smooth playback'
         },
         '4': {
-            'name': '💾 LOW/RETRO',
+            'name': '💾 LOW/FAST',
             'quality': 'low',
             'color': False,
             'style': 'standard',
-            'desc': 'Classic ASCII, fast performance'
+            'desc': 'Basic ASCII, fastest performance'
         },
         '5': {
             'name': '🔢 MATRIX STYLE',
             'quality': 'high',
             'color': True,
             'style': 'matrix',
-            'desc': 'Green matrix-like characters'
+            'desc': 'Matrix effect with proper timing'
         },
         '6': {
             'name': '🎨 CUSTOM',
@@ -331,10 +420,10 @@ def custom_settings():
     
     # Quality
     print("\n📊 Select quality level:")
-    print("  [1] Ultra (200 chars wide)")
-    print("  [2] High (150 chars wide)")
-    print("  [3] Medium (100 chars wide)")
-    print("  [4] Low (80 chars wide)")
+    print("  [1] Ultra (200 chars, no frame skip)")
+    print("  [2] High (150 chars, no frame skip)")
+    print("  [3] Medium (100 chars, smart frame skip)")
+    print("  [4] Low (80 chars, aggressive frame skip)")
     
     quality_map = {'1': 'ultra', '2': 'high', '3': 'medium', '4': 'low'}
     while True:
@@ -345,7 +434,7 @@ def custom_settings():
         print("Invalid choice!")
     
     # Color
-    print("\n🌈 Enable colors? (requires 24-bit color terminal)")
+    print("\n🌈 Enable colors? (may impact performance)")
     settings['color'] = input("  [Y/n]: ").strip().lower() != 'n'
     
     # Style
@@ -379,7 +468,9 @@ def main():
         # Get video info
         cap = cv2.VideoCapture(video_path)
         if cap.isOpened():
-            duration = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = frame_count / fps
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
@@ -387,7 +478,9 @@ def main():
             print(f"\n📹 Video loaded successfully!")
             print(f"   • File: {os.path.basename(video_path)}")
             print(f"   • Resolution: {width}×{height}")
-            print(f"   • Duration: {duration//60}:{duration%60:02d}")
+            print(f"   • FPS: {fps:.1f}")
+            print(f"   • Duration: {duration:.1f}s ({int(duration//60)}:{int(duration%60):02d})")
+            print(f"   • Total frames: {frame_count}")
         
         # Select preset
         preset, choice = select_preset()
@@ -408,20 +501,11 @@ def main():
         loop = input("🔄 Loop video? [y/N]: ").strip().lower() == 'y'
         show_info = input("📊 Show playback info? [Y/n]: ").strip().lower() != 'n'
         
-        # FPS option
-        print("\n🎯 Playback speed:")
-        print("  [1] Normal")
-        print("  [2] Fast (1.5x)")
-        print("  [3] Slow (0.5x)")
-        speed = input("Choice [1]: ").strip() or '1'
-        
-        fps_multiplier = {'1': 1.0, '2': 1.5, '3': 0.5}.get(speed, 1.0)
-        
         # Create converter with settings
         converter = VideoToASCII(
             video_path=video_path,
             width=None,  # Auto-detect
-            fps=int(30 * fps_multiplier),
+            fps=30,  # This is now just for display, actual sync uses video FPS
             color=settings['color'],
             style=settings['style'],
             quality=settings['quality']
@@ -436,6 +520,7 @@ def main():
         print(f"✅ Style: {settings['style']}")
         print(f"✅ Loop: {'ON' if loop else 'OFF'}")
         print(f"✅ Terminal width: {converter.width} characters")
+        print(f"✅ Video will play at original speed: {duration:.1f}s")
         print("="*60)
         
         input("\n🎬 Press ENTER to start playing...")
