@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MP4 to Insane ASCII Art Converter - FIXED VERSION
-With proper frame timing and performance optimization
+MP4 to Insane ASCII Art Converter
+
 """
 
 import cv2
@@ -87,6 +87,7 @@ class VideoToASCII:
         self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.video_duration = self.total_frames / self.video_fps
         
         # Calculate actual frame delay based on video FPS
         self.frame_delay = 1.0 / self.video_fps
@@ -186,7 +187,7 @@ class VideoToASCII:
         print(f"📐 Resolution: {self.width} × {self.ascii_height}")
         print(f"🎨 Quality: {self.quality.upper()}")
         print(f"🔄 Original FPS: {self.video_fps:.1f}")
-        print(f"⏱️ Original Duration: {self.total_frames/self.video_fps:.1f}s")
+        print(f"⏱️ Original Duration: {self.video_duration:.1f}s")
         print(f"🌈 Color: {'ON' if self.color else 'OFF'}")
         print(f"{'='*60}")
         print(f"\n⌨️  Press Ctrl+C to stop\n")
@@ -195,31 +196,50 @@ class VideoToASCII:
         frame_count = 0
         start_time = time.perf_counter()
         dropped_frames = 0
-        video_ended = False
+        last_displayed_frame = None
         
         try:
-            while not video_ended:
+            while True:
                 current_time = time.perf_counter()
                 elapsed = current_time - start_time
                 
+                # Check if we've exceeded video duration (with small buffer for precision)
+                if elapsed >= self.video_duration + 0.1 and not loop:
+                    print("\n\n✅ Video playback completed!")
+                    break
+                
                 # Calculate which frame we should be showing based on elapsed time
-                target_frame_num = min(int(elapsed * self.video_fps), self.total_frames - 1)
+                target_frame_num = int(elapsed * self.video_fps)
+                
+                # If looping and we've exceeded total frames, restart
+                if loop and target_frame_num >= self.total_frames:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    frame_count = 0
+                    start_time = time.perf_counter()
+                    dropped_frames = 0
+                    continue
+                
+                # Ensure we don't try to read beyond the video
+                if target_frame_num >= self.total_frames:
+                    if not loop:
+                        print("\n\n✅ Video playback completed!")
+                        break
                 
                 # Read and process frames until we reach the target frame
-                while frame_count <= target_frame_num:
+                while frame_count <= target_frame_num and frame_count < self.total_frames:
                     ret, frame = self.cap.read()
                     
                     if not ret:
+                        # End of video reached
                         if loop:
-                            # Reset video to beginning
                             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                             frame_count = 0
                             start_time = time.perf_counter()
                             dropped_frames = 0
                             break
                         else:
-                            video_ended = True
-                            break
+                            print("\n\n✅ Video playback completed!")
+                            return  # Exit the function completely
                     
                     # Process and display the frame if it's the target
                     if frame_count == target_frame_num:
@@ -235,21 +255,22 @@ class VideoToASCII:
                         # Clear and display
                         self.clear_screen()
                         print(ascii_art, end='')
+                        last_displayed_frame = frame_count
                         
                         if show_info:
                             # Calculate actual FPS and progress
                             actual_fps = frame_count / elapsed if elapsed > 0 else 0
-                            progress = (frame_count / self.total_frames) * 100
+                            progress = min((frame_count / self.total_frames) * 100, 100.0)
                             
                             # Progress bar
                             bar_length = 50
-                            filled_length = int(bar_length * frame_count // self.total_frames)
+                            filled_length = min(int(bar_length * frame_count // self.total_frames), bar_length)
                             bar = '█' * filled_length + '░' * (bar_length - filled_length)
                             
                             info = f"[{bar}] {progress:.1f}% | "
                             info += f"Frame {frame_count}/{self.total_frames} | "
                             info += f"FPS: {actual_fps:.1f}/{self.video_fps:.1f} | "
-                            info += f"Time: {elapsed:.1f}s/{self.total_frames/self.video_fps:.1f}s"
+                            info += f"Time: {elapsed:.1f}s/{self.video_duration:.1f}s"
                             if dropped_frames > 0:
                                 info += f" | Dropped: {dropped_frames}"
                             
@@ -262,35 +283,37 @@ class VideoToASCII:
                         dropped_frames += 1
                     
                     frame_count += 1
-                    
-                    # Break if video ended
-                    if video_ended:
-                        break
+                
+                # Check if we've processed all frames
+                if frame_count >= self.total_frames and not loop:
+                    print("\n\n✅ Video playback completed!")
+                    break
                 
                 # Calculate how long to sleep to maintain proper timing
-                if not video_ended:
-                    next_frame_time = (frame_count / self.video_fps)
-                    sleep_duration = next_frame_time - (time.perf_counter() - start_time)
-                    
-                    if sleep_duration > 0:
-                        time.sleep(sleep_duration)
+                next_frame_time = (frame_count / self.video_fps)
+                sleep_duration = next_frame_time - (time.perf_counter() - start_time)
+                
+                if sleep_duration > 0 and sleep_duration < 1:  # Sanity check on sleep duration
+                    time.sleep(sleep_duration)
                 
         except KeyboardInterrupt:
             print("\n\n✋ Playback stopped by user")
         except Exception as e:
             print(f"\n\n❌ Error during playback: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.cap.release()
             
             # Final stats
             total_time = time.perf_counter() - start_time
             if total_time > 0:
-                print(f"\n\n{'='*60}")
+                print(f"\n{'='*60}")
                 print(f"📊 PLAYBACK STATISTICS:")
                 print(f"  • Total playback time: {total_time:.2f}s")
-                print(f"  • Original video duration: {self.total_frames/self.video_fps:.2f}s")
-                print(f"  • Time difference: {total_time - (self.total_frames/self.video_fps):.2f}s")
-                print(f"  • Frames played: {frame_count}")
+                print(f"  • Original video duration: {self.video_duration:.2f}s")
+                print(f"  • Time difference: {abs(total_time - self.video_duration):.2f}s")
+                print(f"  • Frames displayed: {last_displayed_frame + 1 if last_displayed_frame is not None else frame_count}")
                 print(f"  • Frames dropped: {dropped_frames}")
                 if self.processing_times:
                     avg_process = sum(self.processing_times) / len(self.processing_times)
@@ -309,8 +332,8 @@ def print_banner():
     ║    ██║  ██║███████║╚██████╗██║██║     ╚████╔╝ ██║██████╔╝   ║
     ║    ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═══╝  ╚═╝╚═════╝    ║
     ║                                                               ║
-    ║           🎬 MP4 TO ASCII ART CONVERTER v2.1 🎬              ║
-    ║                  NOW WITH PERFECT TIMING!                    ║
+    ║           🎬 MP4 TO ASCII ART CONVERTER v2.2 🎬              ║
+    ║                  PERFECT TIMING & AUTO-EXIT!                 ║
     ╚═══════════════════════════════════════════════════════════════╝
     """
     print(banner)
