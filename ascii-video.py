@@ -79,7 +79,7 @@ class VideoToASCII:
         """Initialize video capture"""
         self.cap = cv2.VideoCapture(self.video_path)
         if not self.cap.isOpened():
-            print(f"❌ Error: Could not open video file {self.video_path}")
+            print(f"❌ ERROR: Couldn't open '{self.video_path}'. The ritual failed to bind your cursed video.")
             return False
         
         # Get video properties
@@ -181,16 +181,16 @@ class VideoToASCII:
         # Start info
         self.clear_screen()
         print(f"\n{'='*60}")
-        print(f"🎬 ASCII VIDEO PLAYER - OPTIMIZED")
+        print(f"💀 ASCII VIDEO INSANITY ENGINE 💀")
         print(f"{'='*60}")
-        print(f"📹 Video: {os.path.basename(self.video_path)}")
-        print(f"📐 Resolution: {self.width} × {self.ascii_height}")
-        print(f"🎨 Quality: {self.quality.upper()}")
-        print(f"🔄 Original FPS: {self.video_fps:.1f}")
-        print(f"⏱️ Original Duration: {self.video_duration:.1f}s")
-        print(f"🌈 Color: {'ON' if self.color else 'OFF'}")
+        print(f"📼 Offering: {os.path.basename(self.video_path)}")
+        print(f"📐 Battlefield Resolution: {self.width} × {self.ascii_height}")
+        print(f"🎨 Chaos Level: {self.quality.upper()}")
+        print(f"⚡ Native FPS: {self.video_fps:.1f}")
+        print(f"⏱️ Duration of Suffering: {self.video_duration:.1f}s")
+        print(f"🌈 Rainbow Vomit: {'ON' if self.color else 'OFF'}")
         print(f"{'='*60}")
-        print(f"\n⌨️  Press Ctrl+C to stop\n")
+        print(f"\n⌨️  Mash Ctrl+C to escape the madness\n")
         time.sleep(2)
         
         frame_count = 0
@@ -297,9 +297,9 @@ class VideoToASCII:
                     time.sleep(sleep_duration)
                 
         except KeyboardInterrupt:
-            print("\n\n✋ Playback stopped by user")
+            print("\n\n✋ You pulled the plug on the chaos.")
         except Exception as e:
-            print(f"\n\n❌ Error during playback: {e}")
+            print(f"\n\n❌ The ritual backfired: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -309,7 +309,7 @@ class VideoToASCII:
             total_time = time.perf_counter() - start_time
             if total_time > 0:
                 print(f"\n{'='*60}")
-                print(f"📊 PLAYBACK STATISTICS:")
+                print(f"📊 POST-MORTEM REPORT:")
                 print(f"  • Total playback time: {total_time:.2f}s")
                 print(f"  • Original video duration: {self.video_duration:.2f}s")
                 print(f"  • Time difference: {abs(total_time - self.video_duration):.2f}s")
@@ -333,7 +333,7 @@ def print_banner():
     ║    ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝      ╚═══╝  ╚═╝╚═════╝    ║
     ║                                                               ║
     ║           🎬 MP4 TO ASCII ART CONVERTER v2.2 🎬              ║
-    ║                  PERFECT TIMING & AUTO-EXIT!                 ║
+    ║                                                               ║
     ╚═══════════════════════════════════════════════════════════════╝
     """
     print(banner)
@@ -341,11 +341,11 @@ def print_banner():
 def get_video_file():
     """Get video file from user"""
     while True:
-        print("\n📁 Enter the path to your video file (or 'q' to quit):")
+        print("\n📁 Summon your cursed video path (or 'q' to flee):")
         video_path = input(">>> ").strip()
         
         if video_path.lower() == 'q':
-            print("👋 Goodbye!")
+            print("👋 Retreating from the abyss.")
             sys.exit(0)
         
         # Remove quotes if present
@@ -357,13 +357,13 @@ def get_video_file():
             if any(video_path.lower().endswith(ext) for ext in valid_extensions):
                 return video_path
             else:
-                print("⚠️  This doesn't appear to be a video file. Try again.")
+                print("⚠️  That doesn't look like a video, more like a potato. Try again.")
         else:
-            print("❌ File not found. Please check the path and try again.")
+            print("❌ File not found. Offer a real sacrifice and try again.")
 
 def select_preset():
     """Show preset options menu"""
-    print("\n🎨 SELECT QUALITY PRESET:")
+    print("\n🎨 CHOOSE YOUR DESTRUCTION:")
     print("="*50)
     
     presets = {
@@ -418,10 +418,10 @@ def select_preset():
     print("\n" + "="*50)
     
     while True:
-        choice = input("\n👉 Select preset (1-6): ").strip()
+        choice = input("\n👉 Pick your poison (1-6): ").strip()
         if choice in presets:
             return presets[choice], choice
-        print("❌ Invalid choice. Please select 1-6.")
+        print("❌ Not a valid curse level. Choose 1-6.")
 
 def custom_settings():
     """Get custom settings from user"""
@@ -484,14 +484,14 @@ def main():
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
             
-            print(f"\n📹 Video loaded successfully!")
+            print(f"\n📹 Victim bound successfully!")
             print(f"   • File: {os.path.basename(video_path)}")
             print(f"   • Resolution: {width}×{height}")
             print(f"   • FPS: {fps:.1f}")
             print(f"   • Duration: {duration:.1f}s ({int(duration//60)}:{int(duration%60):02d})")
             print(f"   • Total frames: {frame_count}")
         else:
-            print("⚠️  Warning: Could not read video properties")
+            print("⚠️  The probe failed,video properties unknown.")
         
         # Select preset
         preset, choice = select_preset()
@@ -507,10 +507,10 @@ def main():
             }
         
         # Additional options
-        print("\n⚙️  ADDITIONAL OPTIONS:")
+        print("\n⚙️  EXTRA CHAOS DIALS:")
         print("="*50)
-        loop = input("🔄 Loop video? [y/N]: ").strip().lower() == 'y'
-        show_info = input("📊 Show playback info? [Y/n]: ").strip().lower() != 'n'
+        loop = input("🔄 Enable infinite loop mode? [y/N]: ").strip().lower() == 'y'
+        show_info = input("📊 Display live suffering stats? [Y/n]: ").strip().lower() != 'n'
         
         # Create converter with settings
         converter = VideoToASCII(
@@ -524,36 +524,36 @@ def main():
         
         # Final confirmation
         print("\n" + "="*60)
-        print("🚀 READY TO START!")
+        print("🚀 ARMED AND DANGEROUS")
         print("="*60)
-        print(f"✅ Quality: {settings['quality'].upper()}")
-        print(f"✅ Colors: {'ON' if settings['color'] else 'OFF'}")
-        print(f"✅ Style: {settings['style']}")
-        print(f"✅ Loop: {'ON' if loop else 'OFF'}")
-        print(f"✅ Terminal width: {converter.width} characters")
-        print(f"✅ Video will play at original speed: {duration:.1f}s")
+        print(f"✅ Chaos Level: {settings['quality'].upper()}")
+        print(f"✅ Rainbow Vomit: {'ON' if settings['color'] else 'OFF'}")
+        print(f"✅ Glyph Arsenal: {settings['style']}")
+        print(f"✅ Infinite Loop: {'ON' if loop else 'OFF'}")
+        print(f"✅ Terminal width: {converter.width} glyphs")
+        print(f"✅ Playback at native speed: {duration:.1f}s")
         print("="*60)
         
-        input("\n🎬 Press ENTER to start playing...")
+        input("\n🎬 Press ENTER to unleash the demons...")
         
         # Play the video
         converter.play_ascii_video(loop=loop, show_info=show_info)
         
         # Ask if user wants to convert another video
         print("\n" + "="*60)
-        again = input("🔄 Convert another video? [y/N]: ").strip().lower() == 'y'
+        again = input("🔄 Summon another victim? [y/N]: ").strip().lower() == 'y'
         if again:
             main()
         else:
-            print("\n👋 Thanks for using ASCII Video Converter!")
-            print("⭐ Have an awesome day! ⭐\n")
+            print("\n👋 Thanks for feeding the ASCII beast!")
+            print("⭐ May your CPU survive. ⭐\n")
             
     except Exception as e:
-        print(f"\n❌ An error occurred: {e}")
+        print(f"\n❌ The ritual exploded in your face: {e}")
         import traceback
         traceback.print_exc()
-        print("Please try again or check your video file.")
-        input("\nPress ENTER to exit...")
+        print("Offer a proper sacrifice (check your file) and try again.")
+        input("\nPress ENTER to crawl back to reality...")
 
 if __name__ == "__main__":
     main()
