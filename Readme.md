@@ -220,6 +220,12 @@ python ascii_video.py
 
 <div align="center">
 
+### 🎥 **LIVE DEMO - ULTRA INSANE MODE IN ACTION!**
+
+https://github.com/user-attachments/assets/ascii-demo-ultra.mp4
+
+*Watch as reality melts into pure ASCII madness! 🔥*
+
 ### 📼 **RICKROLL IN ASCII?**
 ```
 Never gonna give you up
